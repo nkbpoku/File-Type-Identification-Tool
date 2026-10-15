@@ -373,6 +373,27 @@ def display_report(details):
     report_box.configure(state="disabled")
 
 
+def copy_results():
+    report = report_box.get("1.0", "end-1c")
+
+    if not report.strip():
+        status.set("No inspection results to copy.")
+        return
+
+    try:
+        window.clipboard_clear()
+        window.clipboard_append(report)
+        window.update_idletasks()
+    except tk.TclError:
+        messagebox.showerror(
+            "Copy failed",
+            "Could not copy the results. Please try again.",
+        )
+        return
+
+    status.set("Results copied to clipboard.")
+
+
 def identify_file():
     global busy
 
@@ -480,12 +501,15 @@ enable_button(identify_button, False)
 
 results_frame = tk.Frame(panel, bg=PANEL)
 
-# Keep Done visible even when the report needs scrolling.
+# Keep the buttons visible when the report needs scrolling.
 footer = tk.Frame(results_frame, bg=PANEL)
 footer.pack(side="bottom", fill="x", padx=35, pady=(10, 25))
 
 done_button = make_button(footer, "Done", clear_file)
 done_button.pack(side="right")
+
+copy_button = make_button(footer, "Copy Results", copy_results)
+copy_button.pack(side="left")
 
 result_icon = tk.Canvas(
     results_frame,
