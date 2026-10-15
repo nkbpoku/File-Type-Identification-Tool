@@ -2,6 +2,8 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+
+from office_checks import inspect_office_container
 from filename_checks import check_filename
 
 
@@ -42,7 +44,7 @@ def run_detector(tool, path, mime=False):
     if mime:
         command.append("--mime-type")
 
-    # Arguments are passed directly, without a shell.
+    # Pass arguments directly. Do not use a shell.
     command.extend(["--", str(path)])
 
     try:
@@ -50,11 +52,14 @@ def run_detector(tool, path, mime=False):
             command,
             capture_output=True,
             text=True,
+            errors="replace",
             check=True,
             timeout=5,
         )
     except subprocess.TimeoutExpired as error:
-        raise OSError("File identification took too long.") from error
+        raise OSError(
+            "File identification took too long."
+        ) from error
     except subprocess.CalledProcessError as error:
         raise OSError(
             error.stderr.strip() or "File identification failed."
@@ -64,7 +69,11 @@ def run_detector(tool, path, mime=False):
 
 
 def compare_extension(extension, mime_type):
-    if mime_type in ("application/zip", "application/x-zip"):
+    if mime_type in (
+        "application/zip",
+        "application/x-zip",
+        "application/x-zip-compressed",
+    ):
         return (
             ".zip (container; may also contain another format)",
             "Inconclusive — ZIP containers are used by several formats",
@@ -102,14 +111,13 @@ def compare_extension(extension, mime_type):
 
 
 def inspect_pe(path, size):
-    """Check basic PE headers. This does not fully validate a PE file."""
+    """Check basic PE headers, without fully validating the file."""
     with path.open("rb") as file:
         dos_header = file.read(64)
 
         if len(dos_header) < 64 or dos_header[:2] != b"MZ":
             return None
 
-        # The DOS header points to the PE header.
         pe_offset = int.from_bytes(dos_header[60:64], "little")
 
         if pe_offset < 64 or pe_offset + 24 > size:
@@ -156,7 +164,6 @@ def inspect_pe(path, size):
         if optional_size < minimum_size:
             return None
 
-        # IMAGE_FILE_EXECUTABLE_IMAGE.
         if not characteristics & 0x0002:
             return None
 
@@ -167,7 +174,8 @@ def inspect_pe(path, size):
             0xAA64: "ARM64",
         }
         architecture = architectures.get(
-            machine, f"machine code 0x{machine:04x}"
+            machine,
+            f"machine code 0x{machine:04x}",
         )
 
         if subsystem in (10, 11, 12, 13):
@@ -216,19 +224,37 @@ def inspect_file(file_path):
 
     extension = path.suffix.lower()
     pe_details = inspect_pe(path, file_info.st_size)
+    office_details = inspect_office_container(path)
 
+    # These checks can identify candidates without the system file tool.
     if pe_details is not None:
         detected_format = pe_details["description"]
         mime_type = "application/vnd.microsoft.portable-executable"
-        suggested_extension = " or ".join(pe_details["extensions"])
-
+        extensions = pe_details["extensions"]
+        suggested_extension = " or ".join(extensions)
         comparison = (
             "Extension matches the signature"
-            if extension in pe_details["extensions"]
+            if extension in extensions
             else "Extension mismatch"
         )
-
         evidence = pe_details["evidence"]
+        detection_method = "pe_headers"
+
+    elif office_details["description"] is not None:
+        detected_format = office_details["description"]
+        mime_type = "application/zip"
+        extensions = office_details["extensions"]
+        suggested_extension = " or ".join(extensions)
+        comparison = (
+            "Extension matches the signature"
+            if extension in extensions
+            else "Extension mismatch"
+        )
+        evidence = (
+            "Office candidate identified from ZIP directory entries. "
+            "This is not full document validation."
+        )
+        detection_method = "office_container"
 
     else:
         tool = (
@@ -239,7 +265,7 @@ def inspect_file(file_path):
 
         if tool is None:
             raise OSError(
-                "Broad identification requires the 'file' tool. "
+                "This format requires the 'file' identification tool. "
                 "Windows broad-format support is not configured yet."
             )
 
@@ -247,9 +273,10 @@ def inspect_file(file_path):
         mime_type = run_detector(tool, path, mime=True)
 
         suggested_extension, comparison = compare_extension(
-            extension, mime_type
+            extension,
+            mime_type,
         )
-
+        detection_method = "system_file"
         evidence = (
             "Identified using the system file tool's content rules.\n"
             f"Content category (MIME): {mime_type}\n"
@@ -263,6 +290,9 @@ def inspect_file(file_path):
                 "did not pass. This may be another MZ-based format "
                 "or an incomplete or malformed PE file."
             )
+
+    if office_details["evidence"]:
+        evidence += "\n\n" + office_details["evidence"]
 
     evidence += (
         "\nFirst 32 bytes, hexadecimal: "
@@ -280,5 +310,7 @@ def inspect_file(file_path):
         "original_name": "Unknown — no rename history available",
         "evidence": evidence,
         "mime_type": mime_type,
+        "detection_method": detection_method,
         "filename_findings": check_filename(path),
+        "content_findings": office_details["findings"],
     }

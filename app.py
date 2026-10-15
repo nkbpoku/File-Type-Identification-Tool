@@ -47,6 +47,10 @@ def readable_location(file_path):
 
 
 def friendly_type(details):
+    # Preserve the more specific Office container result.
+    if details.get("detection_method") == "office_container":
+        return details["detected_format"]
+
     names = {
         "application/pdf": "PDF document",
         "image/png": "PNG image",
@@ -78,8 +82,18 @@ def friendly_type(details):
 
 def describe_result(details):
     comparison = details["comparison"]
+    office_candidate = (
+        details.get("detection_method") == "office_container"
+    )
 
     if comparison == "Extension matches the signature":
+        if office_candidate:
+            return (
+                "The archive's internal filenames are consistent "
+                "with this Office file extension. The exact subtype "
+                "and document validity have not been verified."
+            )
+
         return (
             f"The detected contents match the file's "
             f"{details['extension']} extension."
@@ -124,11 +138,16 @@ def show_result_icon(kind):
     if kind == "match":
         image = check_icon
         colour = "#009c00"
-        caption = "Extension matches; no filename concerns found."
+        caption = (
+            "Extension is consistent with the detected type. "
+            "This is not a safety verdict."
+        )
     elif kind == "concern":
         image = cross_icon
         colour = "#ff3333"
-        caption = "Mismatch or filename concern - review the details."
+        caption = (
+            "Mismatch or inspection finding — review the details."
+        )
     else:
         image = None
         colour = "#7a8089"
@@ -325,14 +344,19 @@ def clear_file():
 
 def display_report(details):
     findings = details.get("filename_findings")
+    content_findings = details.get("content_findings", [])
     comparison = details["comparison"]
 
-    has_concern = any(
+    filename_concern = any(
         finding["level"] in {"Warning", "Notice"}
         for finding in (findings or [])
     )
 
-    if comparison == "Extension mismatch" or has_concern:
+    if (
+        comparison == "Extension mismatch"
+        or filename_concern
+        or content_findings
+    ):
         show_result_icon("concern")
     elif (
         comparison == "Extension matches the signature"
@@ -362,6 +386,22 @@ def display_report(details):
         f"Expected extension: {details['suggested_extension']}\n\n"
         f"Result: {describe_result(details)}\n\n"
         f"Name check: {name_check}\n\n"
+    )
+
+    if content_findings:
+        report += (
+            "Content notes:\n"
+            + "\n\n".join(content_findings)
+            + "\n\n"
+        )
+
+    if details.get("detection_method") == "office_container":
+        report += (
+            "Office check: Read the archive's internal file list. "
+            "Document contents and macro code were not analysed.\n\n"
+        )
+
+    report += (
         f"Saved in: {readable_location(details['location'])}\n\n"
         "These checks don't confirm whether a file is safe to open."
     )
@@ -501,7 +541,6 @@ enable_button(identify_button, False)
 
 results_frame = tk.Frame(panel, bg=PANEL)
 
-# Keep the buttons visible when the report needs scrolling.
 footer = tk.Frame(results_frame, bg=PANEL)
 footer.pack(side="bottom", fill="x", padx=35, pady=(10, 25))
 
