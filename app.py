@@ -1,6 +1,8 @@
+import json
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from datetime import datetime, timezone
 from pathlib import Path
+from tkinter import filedialog, messagebox
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from inspector import inspect_file
@@ -19,6 +21,7 @@ BUTTON_PRESSED = "#cbd0d8"
 ASSETS = Path(__file__).resolve().parent / "assets"
 
 selected_file = None
+current_report = None
 busy = False
 
 
@@ -47,7 +50,6 @@ def readable_location(file_path):
 
 
 def friendly_type(details):
-    # Preserve the more specific Office container result.
     if details.get("detection_method") == "office_container":
         return details["detected_format"]
 
@@ -145,9 +147,7 @@ def show_result_icon(kind):
     elif kind == "concern":
         image = cross_icon
         colour = "#ff3333"
-        caption = (
-            "Mismatch or inspection finding — review the details."
-        )
+        caption = "Mismatch or inspection finding — review the details."
     else:
         image = None
         colour = "#7a8089"
@@ -261,7 +261,7 @@ def enable_button(button, enabled):
 
 
 def select_file(file_path):
-    global selected_file
+    global selected_file, current_report
 
     path = Path(file_path)
 
@@ -273,10 +273,12 @@ def select_file(file_path):
         return
 
     selected_file = str(path)
+    current_report = None
     filename.set(path.name)
     status.set("File selected. Click Identify when ready.")
     select_button.configure(text="Clear")
     enable_button(identify_button, True)
+
     drop_area.configure(
         text=f"File selected\n\n{path.name}",
         bg=DROP_FLASH,
@@ -298,6 +300,7 @@ def choose_or_clear():
         return
 
     file_path = filedialog.askopenfilename(title="Choose a file")
+
     if file_path:
         select_file(file_path)
 
@@ -319,14 +322,16 @@ def drop_file(event):
 
 
 def clear_file():
-    global selected_file
+    global selected_file, current_report
 
     if busy:
         return
 
     selected_file = None
+    current_report = None
     filename.set("")
     status.set("Choose or drop a file to get started.")
+
     select_button.configure(text="Choose File")
     enable_button(identify_button, False)
     enable_button(select_button, True)
@@ -343,6 +348,23 @@ def clear_file():
 
 
 def display_report(details):
+    global current_report
+
+    current_report = {
+        "report_version": 1,
+        "tool": "File Type Identification Tool",
+        "inspected_at": datetime.now(timezone.utc).isoformat(),
+        "analysis": (
+            "Static identification; the selected file was not executed."
+        ),
+        "limitations": (
+            "File identification does not establish safety. "
+            "Office candidates are identified from archive entry names, "
+            "not full document validation."
+        ),
+        "details": details,
+    }
+
     findings = details.get("filename_findings")
     content_findings = details.get("content_findings", [])
     comparison = details["comparison"]
@@ -434,12 +456,65 @@ def copy_results():
     status.set("Results copied to clipboard.")
 
 
+def export_report():
+    if current_report is None:
+        messagebox.showinfo(
+            "No report available",
+            "Inspect a file before exporting a report.",
+        )
+        return
+
+    file_name = current_report["details"]["name"]
+
+    destination = filedialog.asksaveasfilename(
+        title="Save inspection report",
+        initialfile=f"{file_name}.report.json",
+        defaultextension=".json",
+        filetypes=[("JSON report", "*.json")],
+    )
+
+    if not destination:
+        return
+
+    try:
+        source = Path(current_report["details"]["location"])
+        target = Path(destination)
+
+        # Block the source path, symlinks and existing hard links
+        # that refer to the inspected file.
+        same_file = target.resolve() == source.resolve()
+
+        if target.exists() and source.exists():
+            same_file = same_file or target.samefile(source)
+
+        if same_file:
+            messagebox.showerror(
+                "Choose another location",
+                "The report cannot replace the inspected file.",
+            )
+            return
+
+        report_text = json.dumps(
+            current_report,
+            indent=2,
+            ensure_ascii=True,
+        )
+        target.write_text(report_text + "\n", encoding="utf-8")
+
+    except (OSError, ValueError, TypeError, RuntimeError) as error:
+        messagebox.showerror("Export failed", str(error))
+        return
+
+    status.set("JSON report saved.")
+
+
 def identify_file():
-    global busy
+    global busy, current_report
 
     if selected_file is None or busy:
         return
 
+    current_report = None
     busy = True
     status.set("Reading file…")
     enable_button(identify_button, False)
@@ -549,6 +624,9 @@ done_button.pack(side="right")
 
 copy_button = make_button(footer, "Copy Results", copy_results)
 copy_button.pack(side="left")
+
+export_button = make_button(footer, "Export JSON", export_report)
+export_button.pack(side="left", padx=(10, 0))
 
 result_icon = tk.Canvas(
     results_frame,
