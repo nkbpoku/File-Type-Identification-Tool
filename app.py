@@ -83,12 +83,12 @@ def friendly_type(details):
 
 
 def describe_result(details):
-    comparison = details["comparison"]
+    comparison = details["extension_check"]["code"]
     office_candidate = (
         details.get("detection_method") == "office_container"
     )
 
-    if comparison == "Extension matches the signature":
+    if comparison == "EXTENSION_MATCH":
         if office_candidate:
             return (
                 "The archive's internal filenames are consistent "
@@ -101,7 +101,7 @@ def describe_result(details):
             f"{details['extension']} extension."
         )
 
-    if comparison == "Extension mismatch":
+    if comparison == "EXTENSION_MISMATCH":
         if details["extension"] == "No extension":
             return (
                 "This file has no extension. Its contents suggest "
@@ -351,7 +351,7 @@ def display_report(details):
     global current_report
 
     current_report = {
-        "report_version": 1,
+        "report_version": 2,
         "tool": "File Type Identification Tool",
         "inspected_at": datetime.now(timezone.utc).isoformat(),
         "analysis": (
@@ -365,57 +365,45 @@ def display_report(details):
         "details": details,
     }
 
-    findings = details.get("filename_findings")
-    content_findings = details.get("content_findings", [])
-    comparison = details["comparison"]
+    outcome = details["outcome"]
+    kind = {
+        "consistent": "match",
+        "finding": "concern",
+        "incomplete": "unknown",
+    }.get(outcome["status"], "unknown")
+    show_result_icon(kind)
+    result_caption.configure(text=outcome["message"])
 
-    filename_concern = any(
-        finding["level"] in {"Warning", "Notice"}
-        for finding in (findings or [])
+    labels = {
+        "consistent": "Consistent within checked scope",
+        "finding": "Review findings",
+        "incomplete": "Incomplete or inconclusive",
+    }
+    name_check = "\n\n".join(
+        item["message"] for item in details["filename_checks"]
     )
-
-    if (
-        comparison == "Extension mismatch"
-        or filename_concern
-        or content_findings
-    ):
-        show_result_icon("concern")
-    elif (
-        comparison == "Extension matches the signature"
-        and findings is not None
-    ):
-        show_result_icon("match")
-    else:
-        show_result_icon("unknown")
-
-    if findings is None:
-        name_check = "Filename check unavailable."
-    elif not findings:
-        name_check = (
-            "No misleading filename patterns found "
-            "by the current checks."
-        )
-    else:
-        name_check = "\n\n".join(
-            finding["message"] for finding in findings
-        )
-
     report = (
         f"File: {details['name']}\n\n"
         f"Size: {readable_size(details['size_bytes'])}\n\n"
         f"Detected type: {friendly_type(details)}\n\n"
         f"Current extension: {details['extension']}\n\n"
         f"Expected extension: {details['suggested_extension']}\n\n"
-        f"Result: {describe_result(details)}\n\n"
+        f"Overall result: {labels.get(outcome['status'], 'Unable to confirm')}\n\n"
+        f"Extension check: {describe_result(details)}\n\n"
         f"Name check: {name_check}\n\n"
     )
 
-    if content_findings:
-        report += (
-            "Content notes:\n"
-            + "\n\n".join(content_findings)
-            + "\n\n"
-        )
+    # Separate observations requiring review from checks not completed.
+    for check_status, heading in (
+        ("finding", "Content findings"),
+        ("incomplete", "Checks not completed or unconfirmed"),
+    ):
+        items = [
+            item["message"] for item in details["content_checks"]
+            if item["status"] == check_status
+        ]
+        if items:
+            report += heading + ":\n" + "\n\n".join(items) + "\n\n"
 
     if details.get("detection_method") == "office_container":
         report += (
@@ -425,7 +413,8 @@ def display_report(details):
 
     report += (
         f"Saved in: {readable_location(details['location'])}\n\n"
-        "These checks don't confirm whether a file is safe to open."
+        "These checks don't confirm whether a file is safe to open. "
+        "A finding is not a malware verdict."
     )
 
     report_box.configure(state="normal")
